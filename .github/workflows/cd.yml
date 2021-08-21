@@ -1,0 +1,38 @@
+name: CD acuity-sr/bkstg
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release to deploy
+        required: true
+      branch:
+        description: Branch we are deploying
+        required: false
+  repository_dispatch:
+    types: [ CD ]
+
+# # CD is the deployment script. 
+# Needs to follow the 4-step process:
+# 1. bootstrap: to establish Service-principals, credentials etc
+# 2. provision infrastructure: AKS, ACR etc.
+# 3. build containers: use release to build container and put in ACR
+# 4. k8s: configure and deploy application k8s
+
+jobs:
+  cd:
+    name: Deploying ${{ github.event.inputs.release }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "CD script invoked with release=${{ github.event.inputs.release }}!"
+          echo "CD script invoked with branch=${{ github.event.inputs.branch }}!"
+      - id: bootstrap
+        run: echo "bootstrap script would run here"
+      - id: provision-infra
+        run: echo "infrastructure would have been provisioned here"
+      - id: build-images
+        run: echo "build app images and publish to container registry"
+      - id: configure-k8s
+        run: echo "k8s provisioning would happen here"
+      - id: deployment
+        run: echo "any deployment would happen here"

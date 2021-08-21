@@ -1,0 +1,106 @@
+name: CI acuity-sr/bkstg
+on:
+  push:
+    branches:
+      - "*"
+  pull_request:
+    branches:
+      - "main"
+jobs:
+  build:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: true
+      matrix:
+        node: [14]
+        os: [ubuntu-latest]
+        # os: [ubuntu-latest, macos-latest, windows-latest]
+    name: ${{ matrix.os }}-node@v${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@master
+      - uses: actions/setup-node@v1
+        with:
+          node-version: ${{ matrix.node }}
+          always-auth: true
+          registry-url: 'https://npm.pkg.github.com'
+          # scope: acuity-sr - defaults to user/org that owns this file.
+      - run: node --version
+
+      # caches **/node_modules, busting the cache on yarn.lock updates
+      - uses: actions/cache@v2
+        id: node_modules_cache
+        with:
+          path: '**/node_modules'
+          key: ${{ runner.os }}-modules-${{ hashFiles('**/yarn.lock') }}
+      - if: steps.node_modules_cache.outputs.cache-hit != 'true'
+        run: yarn install
+      - run: yarn tsc
+      - run: yarn test:all
+      - if: matrix.os == 'ubuntu-latest'
+        name: yarn run build (ubuntu only)
+        # With bkstg-one, we are serving the backend+app from a single image.
+        # We do need to open up ports 7000(backend) + 3000 (app).
+        # To create a github release, we just have to create a tarball of
+        # packages/backend/dist
+        run: |
+          yarn build
+          mkdir -p release
+          tar -zcvf release/bkstg-one.tgz packages/backend/dist/* app-config.yaml Dockerfile
+      - name: branch name
+        id: branch
+        shell: bash
+        run: | 
+          if [[ $GITHUB_EVENT_NAME == 'pull_request' ]]
+          then
+            echo "::set-output name=NAME::$(echo ${GITHUB_HEAD_REF})"
+          else
+            echo "::set-output name=NAME::$(echo ${GITHUB_REF#refs/heads/})"
+          fi
+      - name: branch name
+        run: echo "${{ steps.branch.outputs.NAME }}"
+      
+      # development release
+      - name: generate dev version
+        id: dev-version
+        if: steps.branch.outputs.NAME != 'release'
+        run: |
+          echo "::set-output name=COMMIT::$(git rev-parse HEAD)"
+          echo "::set-output name=VERSION::${{ steps.branch.outputs.NAME }}-$(git rev-parse --short HEAD)"
+      - name: make dev release
+        if: steps.branch.outputs.NAME != 'release'
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "release/*"
+          tag: ${{ steps.dev-version.outputs.VERSION }}
+          # TODO replace with link to commit that generated this release.
+          body: A development release
+          commit: ${{ steps.dev-version.outputs.COMMIT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # production release
+      - name: generate prod version
+        id: prod-version
+        if: steps.branch.outputs.NAME == 'release'
+        run: |
+          echo "::set-output name=COMMIT::$(git rev-parse HEAD)"
+          echo "::set-output name=VERSION::$(jq -r .version package.json)"
+      - name: make prod release
+        if: steps.branch.outputs.NAME == 'release'
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "release/*"
+          tag: ${{ steps.prod-version.outputs.VERSION }}
+          # TODO replace with link to commit that generated this release.
+          body: A development release
+          commit: ${{ steps.prod-version.outputs.COMMIT }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Either the dev or prod release has been created. Create appropriate deployment.
+      - name: trigger CD
+        uses: peter-evans/repository-dispatch@v1
+        with:
+          token: ${{ secrets.GH_ACTIONS }}
+          repository: ${{ github.repository }}
+          event-type: CD
+          client-payload: '{"release": "${{ steps.prod-version.outputs.VERSION }}", "branch": "${{ steps.branch.outputs.NAME }}"}'
